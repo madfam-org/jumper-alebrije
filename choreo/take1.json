@@ -1,0 +1,57 @@
+{
+ "seconds": 43,
+ "fps": 30,
+ "_what": "Brazilian dance from the first second, Dream Wings, a Ctrl tap back to standing (a Ctrl release after a chord does not leave), a bow.",
+ "events": [
+  [
+   0.3,
+   "down",
+   "key_left_ctrl"
+  ],
+  [
+   0.4,
+   "down",
+   "key_2"
+  ],
+  [
+   0.6,
+   "up",
+   "key_2"
+  ],
+  [
+   15.4,
+   "down",
+   "key_4"
+  ],
+  [
+   15.6,
+   "up",
+   "key_4"
+  ],
+  [
+   31.4,
+   "up",
+   "key_left_ctrl"
+  ],
+  [
+   31.6,
+   "down",
+   "key_left_ctrl"
+  ],
+  [
+   31.8,
+   "up",
+   "key_left_ctrl"
+  ],
+  [
+   32.6,
+   "down",
+   "key_2"
+  ],
+  [
+   32.8,
+   "up",
+   "key_2"
+  ]
+ ]
+}

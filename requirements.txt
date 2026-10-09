@@ -1,0 +1,11 @@
+# Simulation, rendering and packaging. MuJoCo 3.10 is the last release with
+# Intel-Mac wheels; newer releases work wherever they install.
+mujoco>=3.10
+onnxruntime>=1.17
+numpy
+scipy
+trimesh>=4.0
+rtree
+pillow
+imageio
+imageio-ffmpeg

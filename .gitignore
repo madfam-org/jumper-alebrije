@@ -1,0 +1,10 @@
+# Build outputs: attach .skin/.map/.mp4 to a release instead of committing them.
+out/
+dist/
+skin/build/
+scene/build/
+scene/textures/
+media/*.mp4
+__pycache__/
+MUJOCO_LOG.TXT
+.venv/
