@@ -1,10 +1,9 @@
-# Build outputs: attach .skin/.map/.mp4 to a release instead of committing them.
-out/
+# Generated: skins, maps, previews, takes, textures and videos per character.
+build/
+# Release copies: attach .skin/.map/.mp4 to a GitHub release instead of committing them.
 dist/
-skin/build/
-scene/build/
-scene/textures/
-media/*.mp4
 __pycache__/
+*.egg-info/
+.pytest_cache/
 MUJOCO_LOG.TXT
 .venv/
