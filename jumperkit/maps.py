@@ -1,40 +1,28 @@
 """Package the Día de Muertos plaza as a `.map` with KingKong's jumper-design tools.
 
-1. Export the plaza world (`dia_de_muertos.world()`, no robot) as `scene.xml`
-   with its meshes as OBJ files and its textures as PNG files under `assets/`.
+1. Export the plaza world (`scene.world()`, no robot) as `scene.xml` with its
+   meshes as OBJ files and its textures as PNG files under `assets/`.
 2. Write a `kk-scene-package/1` manifest (file inventory, counts, spawn).
-3. `shellflow.map_package.export_environment` upgrades it to `kk-scene-package/2`
-   with the alebrije skin as the bundled default robot.
+3. `shellflow.map_package.export_environment` upgrades it to
+   `kk-scene-package/2` with the character's skin as the bundled default robot.
 4. `shellflow verify-package --mujoco` checks the result.
-
-    python scene/build_map.py [--skin skin/build/alebrije-jumper.skin]
 """
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
-import subprocess
-import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
 
-A = Path(__file__).resolve().parents[1]
-ROOT = A.parent
-DESIGN = ROOT / "jumper-design"
-PROFILE = DESIGN / "robots" / "jumper" / "profile.json"
-sys.path[:0] = [str(A / "scene"), str(DESIGN / "src")]
-from dia_de_muertos import world  # noqa: E402
+from .character import Character
+from .paths import PROFILE, build_dir, media_dir, run_shellflow, use_shellflow
+from .scene import DESCRIPTION, TITLE, world
 
-MAP_ID = "dia-de-muertos-plaza"
-TITLE = "Day of the Dead Plaza"
-DESCRIPTION = ("A Mexican Day of the Dead plaza at dusk: a marigold petal path and ring, "
-               "a three-tier ofrenda with candles, sugar skulls and pan de muerto, "
-               "papel picado overhead and bougainvillea on a cobalt adobe wall.")
-OUT = A / "scene" / "build"
+#: Written into every manifest as provenance.
+EXPORTED_BY = {"repo": "jumper-alebrije", "tool": "jumperkit/maps.py"}
 
 
 def _obj(vertices: np.ndarray, faces: np.ndarray, texcoords: np.ndarray | None) -> bytes:
@@ -47,7 +35,8 @@ def _obj(vertices: np.ndarray, faces: np.ndarray, texcoords: np.ndarray | None) 
     return ("\n".join(lines) + "\n").encode()
 
 
-def export_world() -> dict[str, bytes]:
+def export_world(map_id: str) -> dict[str, bytes]:
+    """The plaza as package files: `scene.xml` plus `assets/` meshes and textures."""
     spec = world()
     root = ET.fromstring(spec.to_xml())
     files: dict[str, bytes] = {}
@@ -55,7 +44,7 @@ def export_world() -> dict[str, bytes]:
     for tag in ("option", "size", "statistic", "extension", "include"):
         for e in root.findall(tag):
             root.remove(e)
-    root.set("model", MAP_ID)
+    root.set("model", map_id)
     asset = root.find("asset")
     for mesh in asset.findall("mesh"):
         name = mesh.get("name")
@@ -80,7 +69,12 @@ def export_world() -> dict[str, bytes]:
     return files
 
 
-def manifest(files: dict[str, bytes]) -> dict:
+def _inventory(files: dict[str, bytes]) -> dict:
+    return {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            for name, data in sorted(files.items()) if name != "scene-package.json"}
+
+
+def manifest(files: dict[str, bytes], map_id: str) -> dict:
     root = ET.fromstring(files["scene.xml"])
     wb = root.findall("worldbody")
     asset = root.find("asset")
@@ -94,12 +88,12 @@ def manifest(files: dict[str, bytes]) -> dict:
     }
     return {
         "schema": "kk-scene-package/1",
-        "id": MAP_ID,
+        "id": map_id,
         "title": TITLE,
         "description": DESCRIPTION,
         "version": "1.0.0",
         "use": "watching",
-        "exportedBy": {"repo": "jumper-alebrije", "tool": "scene/build_map.py"},
+        "exportedBy": EXPORTED_BY,
         "source": {"repository": "jumper-alebrije", "authoredGround": True},
         "requiredCapabilities": ["rigid"],
         "world": {"file": "scene.xml", "assetDir": "", "terrainType": "plane",
@@ -108,43 +102,45 @@ def manifest(files: dict[str, bytes]) -> dict:
         "lights": [{"name": l.get("name")} for l in root.iter("light") if l.get("name")],
         "cameras": [],
         "spawn": {"position": [0.0, 0.0, 0.0], "yaw": 0},
-        "files": {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                  for name, data in sorted(files.items())},
+        "files": _inventory(files),
     }
 
 
-def main() -> None:
-    p = argparse.ArgumentParser()
-    p.add_argument("--skin", type=Path, default=A / "skin" / "build" / f"alebrije-jumper.skin")
-    p.add_argument("--preview", type=Path, default=A / "media" / "map-preview.png")
-    a = p.parse_args()
+def map_path(character: Character) -> Path:
+    return build_dir(character.id) / f"{character.plaza_map_id}.map"
 
+
+def build_map(character: Character, skin: Path, *, preview: Path | None = None,
+              log=print) -> Path:
+    """Package the plaza with `skin` as its default robot, verify; return the path."""
+    use_shellflow()
     from shellflow.map_package import export_environment
     from shellflow.web_appearance import complete_appearance
 
-    OUT.mkdir(parents=True, exist_ok=True)
-    env = export_world()
-    env["scene-package.json"] = json.dumps(manifest(env), indent=1).encode()
+    map_id = character.plaza_map_id
+    env = export_world(map_id)
+    env["scene-package.json"] = json.dumps(manifest(env, map_id), indent=1).encode()
     # Give every visible geom a named material for the BE UNLIMITED web viewer.
     env = complete_appearance(env)
     m = json.loads(env["scene-package.json"])
-    m["files"] = {name: {"bytes": len(d), "sha256": hashlib.sha256(d).hexdigest()}
-                  for name, d in sorted(env.items()) if name != "scene-package.json"}
+    m["files"] = _inventory(env)
     root = ET.fromstring(env["scene.xml"])
     m["world"]["counts"]["materials"] = sum(1 for _ in root.find("asset").iter("material"))
     env["scene-package.json"] = json.dumps(m, indent=1).encode()
 
-    out = OUT / f"{MAP_ID}.map"
+    out = map_path(character)
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.unlink(missing_ok=True)
-    result = export_environment(env, out, default_skin=a.skin, profile=PROFILE,
-                                preview=a.preview if a.preview.is_file() else None)
-    print("export:", json.dumps(result)[:400])
-    r = subprocess.run([sys.executable, str(DESIGN / "scripts" / "shellflow.py"), "verify-package",
-                        str(out), "--profile", str(PROFILE), "--capability", "rigid",
-                        "--capability", "jumper", "--mujoco"],
-                       capture_output=True, text=True, cwd=DESIGN)
-    print("verify:", r.returncode, r.stdout[:600], r.stderr[-1500:])
+    preview = preview or media_dir(character.id) / "map-preview.png"
+    result = export_environment(env, out, default_skin=skin, profile=PROFILE,
+                                preview=preview if preview.is_file() else None)
+    log(f"export: ok={result.get('ok')} schema={result.get('schema')} id={result.get('id')}")
+    verify_map(out, log=log)
+    return out
 
 
-if __name__ == "__main__":
-    main()
+def verify_map(path: Path, log=print) -> dict:
+    result = run_shellflow("verify-package", str(path), "--profile", str(PROFILE),
+                           "--capability", "rigid", "--capability", "jumper", "--mujoco")
+    log(f"verify {path.name}: ok={result.get('ok')} sha256={result.get('sha256')}")
+    return result

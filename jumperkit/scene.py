@@ -18,8 +18,13 @@ import numpy as np
 import trimesh
 from PIL import Image, ImageDraw
 
-HERE = Path(__file__).resolve().parent
-TEX = HERE / "textures"
+from .paths import TEXTURES as TEX
+
+#: The plaza .map's title and description (English, as jumper-design requires).
+TITLE = "Day of the Dead Plaza"
+DESCRIPTION = ("A Mexican Day of the Dead plaza at dusk: a marigold petal path and ring, "
+               "a three-tier ofrenda with candles, sugar skulls and pan de muerto, "
+               "papel picado overhead and bougainvillea on a cobalt adobe wall.")
 
 GEOM = mujoco.mjtGeom
 
@@ -43,7 +48,7 @@ C = {
 # ── textures ─────────────────────────────────────────────────────────────────
 
 def make_textures() -> dict[str, Path]:
-    TEX.mkdir(exist_ok=True)
+    TEX.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(7)
     out = {}
 
@@ -218,11 +223,6 @@ class Builder:
             self.n += 1
             self.s.worldbody.add_geom(name=f"deco_{self.n}", type=GEOM.mjGEOM_MESH, meshname=name,
                                       material=self.mat(color, **mat), contype=0, conaffinity=0)
-
-
-def _quat_z(deg: float):
-    h = math.radians(deg) / 2
-    return (math.cos(h), 0, 0, math.sin(h))
 
 
 def world(width: int = 1080, height: int = 1920) -> mujoco.MjSpec:
