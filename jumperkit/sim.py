@@ -28,10 +28,7 @@ import mujoco
 import numpy as np
 import onnxruntime as ort
 
-ROOT = Path(__file__).resolve().parents[2]
-JUMPER = ROOT / "jumper"
-BUNDLE = JUMPER / "out" / "bundle_example" / "jumper"
-ROBOT_XML = JUMPER / "assets" / "jumper" / "jumper.xml"
+from .paths import BUNDLE, ROBOT_XML
 
 # tasks/jumper/common/constants.py
 LEGS = ("LF", "RF", "LM", "RM", "LR", "RR")
@@ -209,3 +206,98 @@ def base_state(app: App, data: mujoco.MjData) -> tuple[np.ndarray, float]:
     w, x, y, z = data.qpos[q0 + 3:q0 + 7]
     up_z = 1.0 - 2.0 * (x * x + y * y)
     return pos, math.degrees(math.acos(max(-1.0, min(1.0, up_z))))
+
+
+# ── recording a choreography ─────────────────────────────────────────────────
+
+def plain_world() -> mujoco.MjSpec:
+    """A flat floor with the training ground's contact, and the replay rate."""
+    w = mujoco.MjSpec()
+    w.option.timestep = 0.001
+    w.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+    w.option.ccd_iterations = 50
+    w.worldbody.add_geom(name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[4, 4, 0.1],
+                         contype=1, conaffinity=1, condim=3, friction=[1, 0.005, 0.0001])
+    return w
+
+
+def simulate(choreo: dict, character: str | None = "alebrije") -> dict:
+    """Run a choreography and keep the pose at video rate.
+
+    `choreo` is {"seconds": s, "fps": 30, "events": [[t, "down"|"up", key], ...]},
+    keys named as `jumper/controller/vocabulary.json` names them. `character`
+    None runs the stock robot; a look never changes the result (display-only).
+    """
+    w = plain_world()
+    r = robot_spec()
+    if character:
+        from .character import apply_to_spec, load
+        apply_to_spec(r, load(character))
+    attach_robot(w, r)
+    m = w.compile()
+    d = mujoco.MjData(m)
+    app = App(m)
+    app.reset(d)
+    hz = app.control_hz
+    sub = round(1.0 / (hz * m.opt.timestep))
+    fps = choreo.get("fps", 30)
+    events: dict[int, tuple[list, list]] = {}
+    for t, kind, key in choreo["events"]:
+        dn, up = events.setdefault(round(t * hz), ([], []))
+        (dn if kind == "down" else up).append(key)
+    n_ticks = int(choreo["seconds"] * hz)
+    every = hz / fps
+    qpos, modes, tilts = [], [], []
+    next_frame = 0.0
+    for k in range(n_ticks):
+        dn, up = events.get(k, ([], []))
+        mode = app.tick(d, int(round(k * 1e6 / hz)), dn, up)
+        for _ in range(sub):
+            app.apply_torque(d)
+            mujoco.mj_step(m, d)
+        if k + 1 >= next_frame:
+            qpos.append(d.qpos.copy())
+            modes.append(mode)
+            tilts.append(base_state(app, d)[1])
+            next_frame += every
+    return {"qpos": np.array(qpos), "modes": np.array(modes), "tilt": np.array(tilts),
+            "fps": fps, "log": [tuple(map(str, e)) for e in app.log]}
+
+
+def save_take(result: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, qpos=result["qpos"], modes=result["modes"], tilt=result["tilt"],
+                        fps=result["fps"], log=np.array(result["log"]))
+
+
+# ── the bundle's key bindings, as smoke-test cases ───────────────────────────
+
+CTRL = "key_left_ctrl"
+#: mode -> (seconds, events). Dances: hold Ctrl + 1..4; a lone Ctrl tap ends them.
+SMOKE_CASES: dict[str, tuple[float, list]] = {
+    "dance_crab": (12, [[0.4, "down", CTRL], [0.5, "down", "key_1"], [0.7, "up", "key_1"]]),
+    "dance_brazilian": (12, [[0.4, "down", CTRL], [0.5, "down", "key_2"], [0.7, "up", "key_2"]]),
+    "dance_maze": (12, [[0.4, "down", CTRL], [0.5, "down", "key_3"], [0.7, "up", "key_3"]]),
+    "dance_dream_wings": (12, [[0.4, "down", CTRL], [0.5, "down", "key_4"], [0.7, "up", "key_4"]]),
+    "gesture_hello": (9, [[0.5, "down", "key_1"], [0.7, "up", "key_1"]]),
+    "gesture_bow": (10, [[0.5, "down", "key_2"], [0.7, "up", "key_2"]]),
+    "gesture_paw": (9, [[0.5, "down", "key_3"], [0.7, "up", "key_3"]]),
+    "gesture_salute": (9, [[0.5, "down", "key_4"], [0.7, "up", "key_4"]]),
+    "jump": (5, [[0.5, "down", "key_space"], [0.7, "up", "key_space"]]),
+    "claw_left": (5, [[0.5, "down", "key_v"], [0.7, "up", "key_v"]]),
+    "claw_right": (5, [[0.5, "down", "key_b"], [0.7, "up", "key_b"]]),
+}
+MAX_TILT_DEG = 30.0
+
+
+def smoke(character: str | None = "alebrije", modes: list[str] | None = None) -> list[dict]:
+    """Enter each mode from standing; report whether it ran and the worst tilt."""
+    out = []
+    for mode in modes or list(SMOKE_CASES):
+        seconds, events = SMOKE_CASES[mode]
+        r = simulate({"seconds": seconds, "fps": 30, "events": events}, character)
+        entered = any(e[2] == mode for e in r["log"])
+        worst = float(r["tilt"][30:].max())
+        out.append({"mode": mode, "entered": entered, "worst_tilt_deg": worst,
+                    "ok": entered and worst < MAX_TILT_DEG})
+    return out

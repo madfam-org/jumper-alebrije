@@ -1,45 +1,62 @@
-# Every step of the entry, from tests to the final video. Run from this directory.
-# Assumes KingKong's `jumper` and `jumper-design` checkouts sit next to this one (see README).
+# Every step, for any character: `make <target> CHAR=<id>` (default: alebrije).
+# Run from this directory, with KingKong's `jumper` and `jumper-design` beside it (see README).
 
 PY ?= ../.venv/bin/python
-SHELLFLOW = $(PY) ../jumper-design/scripts/shellflow.py
-PROFILE = ../jumper-design/robots/jumper/profile.json
-SKIN = skin/build/alebrije-jumper.skin
-MAP = scene/build/dia-de-muertos-plaza.map
-VIDEO = media/jumper-alebrije-dia-de-muertos.mp4
+JK = $(PY) -m jumperkit
+CHAR ?= alebrije
+TAKE = build/takes/take1.npz
 
-.PHONY: all test skin map verify dist video clean
+.PHONY: help test regress check look stills skin map package dist verify video lineup clean
 
-all: test dist verify
+help:
+	@grep -E '^[a-z]+:.*## ' Makefile | sed -E 's/:.*## /\t/'
 
-# Every mode in KingKong's bundle is entered and nobody falls (about 2 min).
-test:
-	$(PY) sim/smoke_test.py
+test: ## fast tests: specs valid, looks display-only, alebrije unchanged (seconds)
+	$(PY) -m pytest
 
-# The .skin, built and verified with jumper-design's own exporter.
-skin:
-	$(PY) skin/build_skin.py
+regress: ## slow: rebuild the released alebrije packages, run every mode (minutes)
+	$(PY) -m pytest -m slow
 
-# The .map, bundling the alebrije skin as its default robot.
-map: skin
-	$(PY) scene/build_map.py
+check: ## validate every character spec and list its decorations
+	$(JK) check
 
-# Re-run KingKong's validator on the release copies.
-verify:
-	$(SHELLFLOW) verify-package dist/alebrije-jumper.skin --profile $(PROFILE) --mujoco
-	$(SHELLFLOW) verify-package dist/dia-de-muertos-plaza.map --profile $(PROFILE) \
-		--capability rigid --capability jumper --mujoco
+look: ## 4-view studio sheet of CHAR -> build/CHAR/look.png (seconds)
+	$(JK) look -c $(CHAR)
 
-dist: map
-	mkdir -p dist
-	cp $(SKIN) $(MAP) dist/
+stills: ## CHAR in the plaza from 3 angles -> build/CHAR/plaza.png
+	$(JK) stills -c $(CHAR)
 
-# Simulate the choreography once, then render the 1080x1920 video (about 6 min).
-video:
-	mkdir -p out
-	$(PY) sim/record.py choreo/take1.json out/take1.npz
-	$(PY) render/video.py out/take1.npz choreo/take1.shots.json $(VIDEO)
+skin: ## build + verify CHAR's .skin
+	$(JK) skin -c $(CHAR)
 
-clean:
-	rm -rf out skin/build scene/build scene/textures MUJOCO_LOG.TXT
+map: skin ## build + verify CHAR's .map (bundles the skin)
+	$(JK) map -c $(CHAR)
+
+package: ## everything for a release of CHAR: packages, thumbnails, dist/, verify
+	$(JK) skin -c $(CHAR)
+	$(JK) map -c $(CHAR)
+	$(JK) skin-preview -c $(CHAR)
+	$(JK) map-preview -c $(CHAR)
+	$(JK) skin -c $(CHAR)
+	$(JK) map -c $(CHAR)
+	$(JK) dist -c $(CHAR)
+	$(JK) verify -c $(CHAR)
+
+dist: map ## copy CHAR's .skin and .map into dist/
+	$(JK) dist -c $(CHAR)
+
+verify: ## re-run KingKong's verify-package on CHAR's dist/ files
+	$(JK) verify -c $(CHAR)
+
+$(TAKE): choreo/take1.json
+	$(JK) record choreo/take1.json $@
+
+video: $(TAKE) ## the 43 s vertical video of CHAR -> build/CHAR/video.mp4 (~6 min)
+	$(JK) video -c $(CHAR)
+
+lineup: $(TAKE) ## every character at the same frame -> build/lineup/lineup.png
+	$(JK) lineup
+
+clean: ## remove generated files (build/); dist/ and media/ are kept
+	rm -rf build MUJOCO_LOG.TXT
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +

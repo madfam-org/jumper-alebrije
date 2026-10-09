@@ -1,22 +1,18 @@
-"""Render a recorded choreography in the Día de Muertos plaza, as a vertical video.
+"""Render a recorded take in the Día de Muertos plaza, as a vertical video.
 
-    python render/video.py out/take.npz shots.json out/take.mp4 [--scale 0.5] [--step 1]
-
-`shots.json` holds camera keyframes and captions on the video timeline:
+`shots` (a JSON file) holds camera keyframes and captions on the video timeline:
     {"camera": [[t, azimuth, elevation, distance, lookat_z], ...],
      "captions": [[t0, t1, "text", "top"|"middle"|"bottom"], ...],
-     "badge": "SIMULATION · MuJoCo"}
+     "badge": "SIMULACIÓN | MuJoCo"}
 
 Camera keyframes are interpolated with a smoothstep; the look-at point follows
 the robot's base, low-pass filtered so the camera does not jitter with steps.
+Arial Rounded Bold has no middle dot (·); use "|" in captions and badges.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
-import math
-import sys
 import time
 from pathlib import Path
 
@@ -25,11 +21,9 @@ import mujoco
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-A = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(A / "sim"), str(A / "design"), str(A / "scene")]
-from alebrije import apply_to_spec  # noqa: E402
-from dia_de_muertos import world  # noqa: E402
-from jumper_sim import PREFIX, attach_robot, robot_spec  # noqa: E402
+from .character import Character, apply_to_spec
+from .scene import world
+from .sim import PREFIX, attach_robot, robot_spec
 
 FONT = "/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf"
 
@@ -84,24 +78,23 @@ def badge(img: Image.Image, text: str, size: int) -> None:
     d.text((x + pad, y + 0.6 * pad), text, font=font, fill=(255, 245, 225, 235))
 
 
-def main() -> None:
-    p = argparse.ArgumentParser()
-    p.add_argument("take", type=Path)
-    p.add_argument("shots", type=Path)
-    p.add_argument("out", type=Path)
-    p.add_argument("--scale", type=float, default=1.0, help="0.5 renders 540x960")
-    p.add_argument("--step", type=int, default=1, help="render every Nth frame")
-    p.add_argument("--frames", type=str, default="", help="comma list of times to save as PNG")
-    a = p.parse_args()
+def render_take(take: Path, shots: Path, out: Path, character: Character | None, *,
+                scale: float = 1.0, step: int = 1, stills: list[float] | None = None,
+                log=print) -> Path:
+    """Render `take` (from `sim.simulate`) to an MP4, or to PNG stills at `stills` seconds.
 
-    take = np.load(a.take)
-    qpos, fps = take["qpos"], float(take["fps"])
-    shots = json.loads(a.shots.read_text())
-    W, H = int(1080 * a.scale), int(1920 * a.scale)
+    `scale` 1.0 renders 1080x1920; `step` renders every Nth frame (fps / step).
+    Stills are written beside `out` as `<stem>_t<seconds>.png`.
+    """
+    z = np.load(take)
+    qpos, fps = z["qpos"], float(z["fps"])
+    shot = json.loads(Path(shots).read_text())
+    W, H = int(1080 * scale), int(1920 * scale)
 
     w = world(1080, 1920)
     r = robot_spec()
-    apply_to_spec(r)
+    if character is not None:
+        apply_to_spec(r, character)
     attach_robot(w, r)
     m = w.compile()
     d = mujoco.MjData(m)
@@ -110,41 +103,39 @@ def main() -> None:
     opt.geomgroup[1] = 0  # collision meshes stay hidden
     root = m.jnt_qposadr[m.joint(PREFIX + "floating_base").id]
 
-    stills = [float(x) for x in a.frames.split(",") if x]
+    out.parent.mkdir(parents=True, exist_ok=True)
     writer = None if stills else imageio.get_writer(
-        a.out, fps=fps / a.step, codec="libx264", quality=None, macro_block_size=8,
+        out, fps=fps / step, codec="libx264", quality=None, macro_block_size=8,
         ffmpeg_params=["-crf", "18", "-pix_fmt", "yuv420p", "-preset", "medium"])
     look = qpos[0][root:root + 3].copy()
     t0 = time.time()
-    indices = [min(len(qpos) - 1, round(t * fps)) for t in stills] or range(0, len(qpos), a.step)
+    indices = [min(len(qpos) - 1, round(t * fps)) for t in stills] if stills \
+        else range(0, len(qpos), step)
     for n, i in enumerate(indices):
         t = i / fps
         d.qpos[:] = qpos[i]
         mujoco.mj_forward(m, d)
         base = qpos[i][root:root + 3]
-        look += (base - look) * (1.0 if stills else min(1.0, 2.5 * a.step / fps))
-        az, el, dist, lz = camera_at(shots["camera"], t)
+        look += (base - look) * (1.0 if stills else min(1.0, 2.5 * step / fps))
+        az, el, dist, lz = camera_at(shot["camera"], t)
         cam = mujoco.MjvCamera()
         cam.lookat[:] = [look[0], look[1], lz]
         cam.azimuth, cam.elevation, cam.distance = az, el, dist
         ren.update_scene(d, camera=cam, scene_option=opt)
         img = Image.fromarray(ren.render()).convert("RGBA")
-        for c0, c1, text, where in shots.get("captions", []):
+        for c0, c1, text, where in shot.get("captions", []):
             fade = min(1.0, (t - c0) / 0.25, (c1 - t) / 0.25)
             caption(img, text, where, fade, int(H * 0.052))
-        if shots.get("badge"):
-            badge(img, shots["badge"], int(H * 0.016))
+        if shot.get("badge"):
+            badge(img, shot["badge"], int(H * 0.016))
         frame = np.asarray(img.convert("RGB"))
         if stills:
-            Image.fromarray(frame).save(a.out.with_name(f"{a.out.stem}_t{t:05.1f}.png"))
+            Image.fromarray(frame).save(out.with_name(f"{out.stem}_t{t:05.1f}.png"))
         else:
             writer.append_data(frame)
         if n % 60 == 0:
-            print(f"  frame {n}/{len(indices)}  t={t:5.1f}s  {time.time() - t0:5.0f}s", flush=True)
+            log(f"  frame {n}/{len(indices)}  t={t:5.1f}s  {time.time() - t0:5.0f}s")
     if writer:
         writer.close()
-    print(f"wrote {a.out} ({len(indices)} frames, {time.time() - t0:.0f}s)")
-
-
-if __name__ == "__main__":
-    main()
+    log(f"wrote {out} ({len(indices)} frames, {time.time() - t0:.0f}s)")
+    return out
